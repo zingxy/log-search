@@ -1,0 +1,40 @@
+{
+  "name": "log-search",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Unified log query CLI",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "log-search": "./bin/log-search.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "bin"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "dev": "node --watch dist/index.js"
+  },
+  "dependencies": {
+    "@log-search/provider-sls": "workspace:*",
+    "@log-search/provider-ssh": "workspace:*",
+    "@log-search/provider-types": "workspace:*",
+    "commander": "^12.1.0",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}

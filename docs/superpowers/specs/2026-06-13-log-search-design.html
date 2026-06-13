@@ -1,0 +1,617 @@
+<h1>log-search CLI 设计文档</h1>
+<h2>1. 概述</h2>
+<p><code>log-search</code> 是一个面向开发者和 AI Agent 的命令行日志查询工具。它通过统一的 <code>Provider</code> 接口屏蔽不同日志来源的差异，使用户可以用同一套命令查询 SSH 远程文件日志、阿里云 SLS 日志以及未来扩展的其他来源。</p>
+<h2>2. 目标与非目标</h2>
+<h3>2.1 目标</h3>
+<ul>
+<li>提供统一的 CLI 入口，支持 <code>query</code>（历史查询）和 <code>tail</code>（实时跟踪）两种模式。</li>
+<li>支持多日志来源：第一期为 SSH 远程文件和阿里云 SLS。</li>
+<li>支持一个 profile 绑定多个 provider，结果按时间合并输出。</li>
+<li>人类和 AI 都能使用：默认文本输出便于阅读，<code>--format json</code> 输出 NDJSON 便于程序解析。</li>
+<li>认证复用系统已有能力（SSH agent、aliyun CLI 配置），不额外存储密钥。</li>
+<li>Provider 可扩展：通过统一接口和 ESM 插件机制，用户可以自行实现新的 provider。</li>
+</ul>
+<h3>2.2 非目标</h3>
+<ul>
+<li>第一期不实现交互式 TUI。</li>
+<li>第一期 SLS provider 只实现 <code>query</code>，不实现 <code>tail</code>。</li>
+<li>第一期不做本地二次过滤（provider 层过滤后直接使用）。</li>
+<li>不做日志结构化解析规则配置（如 grok、logstash pattern）。</li>
+<li>不做 Web UI 或 MCP 封装。</li>
+</ul>
+<h2>3. 架构设计</h2>
+<pre><code class="language-text">┌─────────────────────────────────────────┐
+│  log-search CLI Core (TypeScript/ESM)   │
+│  - 命令解析                              │
+│  - 配置加载与校验                        │
+│  - Profile 解析                          │
+│  - Provider Registry                     │
+│  - 输出格式化                            │
+└─────────────┬───────────────────────────┘
+              │ resolves profile
+              ▼
+┌─────────────────────────────────────────┐
+│  Provider Interface                     │
+│  - validate(config): unknown            │
+│  - query(opts): AsyncIterable&lt;LogEntry&gt; │
+│  - tail(opts): AsyncIterable&lt;LogEntry&gt;  │
+└─────────────┬───────────────────────────┘
+              │ loads by provider type
+    ┌─────────┴─────────┐
+    ▼                   ▼
+┌──────────┐      ┌──────────┐
+│ provider │      │ provider │
+│ sls      │      │ ssh      │
+│ (built-in│      │ (built-in│
+│  or      │      │  or      │
+│  plugin) │      │  plugin) │
+└──────────┘      └──────────┘
+</code></pre>
+<p>数据流：</p>
+<ol>
+<li>用户输入命令，如 <code>log-search query --profile prod-api --since 1h -k error</code>。</li>
+<li>CLI Core 读取 <code>~/.config/log-search/config.yaml</code>。</li>
+<li>找到 <code>prod-api</code> profile，解析出其绑定的 provider 列表。</li>
+<li>从 Provider Registry 加载每个 provider 实现。</li>
+<li>并行调用每个 provider 的 <code>query(opts)</code>。</li>
+<li>收集各 provider 返回的 <code>LogEntry</code> 流，按 <code>timestamp</code> 排序合并。</li>
+<li>CLI Core 根据 <code>--format</code> 参数输出 text 或 NDJSON。</li>
+</ol>
+<h2>4. Provider 接口</h2>
+<pre><code class="language-typescript">export interface Provider {
+  /** Provider 类型标识，如 &quot;sls&quot;、&quot;ssh&quot; */
+  readonly type: string;
+
+  /** 简短描述，用于 `log-search providers` 展示 */
+  readonly description: string;
+
+  /** 校验并规范化 provider 配置；返回值的类型由 provider 自己定义 */
+  validate(config: unknown): unknown;
+
+  /** 查询历史日志 */
+  query(opts: QueryOptions): AsyncIterable&lt;LogEntry&gt;;
+
+  /** 实时跟踪日志 */
+  tail(opts: TailOptions): AsyncIterable&lt;LogEntry&gt;;
+}
+
+export interface QueryOptions {
+  profile: Profile;
+  providerConfig: unknown;
+  keyword?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  rawQuery?: string;
+}
+
+export interface TailOptions {
+  profile: Profile;
+  providerConfig: unknown;
+  keyword?: string;
+  since?: string;
+}
+
+export interface LogEntry {
+  /** 来源 provider 实例名 */
+  source: string;
+
+  /** ISO 8601 时间戳 */
+  timestamp?: string;
+
+  /** 日志级别 */
+  level?: string;
+
+  /** 日志主体内容 */
+  message: string;
+
+  /** 原始日志行 */
+  raw: string;
+
+  /** Provider 附加字段 */
+  metadata?: Record&lt;string, unknown&gt;;
+}
+
+export interface Profile {
+  name: string;
+  /** provider 实例名列表；配置文件里支持 `provider` 单数简写，加载时归一化为数组 */
+  providers: string[];
+  defaults: Record&lt;string, unknown&gt;;
+}
+</code></pre>
+<h2>5. Profile 与配置</h2>
+<p>配置文件位置：<code>~/.config/log-search/config.yaml</code>（遵循 XDG Base Directory 规范）。</p>
+<p>配置结构：</p>
+<pre><code class="language-yaml"># ~/.config/log-search/config.yaml
+
+providers:
+  # SLS 生产环境
+  sls-prod-api:
+    type: sls
+    description: &quot;生产环境 API 日志&quot;
+    region: cn-hangzhou
+    project: my-app-prod
+    logstore: api-log
+
+  # SLS 测试环境
+  sls-test-api:
+    type: sls
+    description: &quot;测试环境 API 日志&quot;
+    region: cn-hangzhou
+    project: my-app-test
+    logstore: api-log
+
+  # SSH Web 服务器
+  ssh-web-01:
+    type: ssh
+    description: &quot;Web 服务器 01&quot;
+    host: web-01.example.com
+    user: admin
+    port: 22
+
+profiles:
+  # 单 provider
+  web:
+    provider: ssh-web-01
+    defaults:
+      path: /var/log/nginx/access.log
+
+  # 多 provider
+  prod-api:
+    providers:
+      - sls-prod-api
+      - ssh-web-01
+    defaults:
+      since: 1h
+      keyword: error
+      rawQuery: topic:api
+
+  test-api:
+    provider: sls-test-api
+    defaults:
+      since: 1h
+      keyword: error
+      rawQuery: topic:api
+
+# 外部插件列表
+plugins:
+  - &quot;@log-search/provider-k8s&quot;
+</code></pre>
+<h3>5.1 Provider 与 Profile 的职责分界</h3>
+<ul>
+<li><strong>Provider</strong>：负责“怎么连、连哪里”。配置里放连接参数，如 <code>region</code>、<code>project</code>、<code>host</code>、<code>user</code>。</li>
+<li><strong>Profile</strong>：负责“查什么、怎么查”。配置里放查询默认值，如 <code>since</code>、<code>keyword</code>、<code>rawQuery</code>、<code>limit</code>。</li>
+</ul>
+<p><code>profile.defaults</code> 中的通用字段由 CLI Core 解析；provider-specific 字段（如 SLS 的 <code>query</code>、SSH 的 <code>path</code>）原样透传给 provider。</p>
+<h3>5.2 多环境表达</h3>
+<p>“环境”（dev/test/staging/prod）不是 CLI 的系统概念，只是命名约定。可以通过 provider/profile 命名体现，例如 <code>sls-prod-api</code>、<code>test-api</code>。</p>
+<h2>6. 命令设计</h2>
+<h3>6.1 全局选项</h3>
+<table>
+<thead>
+<tr>
+<th>选项</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>--config</code></td>
+<td>指定配置目录，默认 <code>~/.config/log-search/</code></td>
+</tr>
+<tr>
+<td><code>--version</code></td>
+<td>显示版本</td>
+</tr>
+<tr>
+<td><code>--help</code></td>
+<td>显示帮助</td>
+</tr>
+</tbody></table>
+<h3>6.2 <code>log-search query</code></h3>
+<p>查询历史日志。</p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>说明</th>
+<th>示例</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>--profile, -p</code></td>
+<td>必填，profile 名</td>
+<td><code>--profile prod-api</code></td>
+</tr>
+<tr>
+<td><code>--since, -s</code></td>
+<td>起始时间</td>
+<td><code>--since 1h</code>、<code>--since 2024-06-01T00:00:00</code></td>
+</tr>
+<tr>
+<td><code>--until, -u</code></td>
+<td>结束时间</td>
+<td><code>--until 30m</code></td>
+</tr>
+<tr>
+<td><code>--keyword, -k</code></td>
+<td>关键字过滤</td>
+<td><code>-k &quot;payment failed&quot;</code></td>
+</tr>
+<tr>
+<td><code>--limit, -n</code></td>
+<td>最大返回条数</td>
+<td><code>--limit 100</code></td>
+</tr>
+<tr>
+<td><code>--format</code></td>
+<td>输出格式：<code>text</code> 或 <code>json</code></td>
+<td><code>--format json</code></td>
+</tr>
+<tr>
+<td><code>--raw-query</code></td>
+<td>provider 原生查询语法透传</td>
+<td><code>--raw-query &quot;topic:api AND status:500&quot;</code></td>
+</tr>
+</tbody></table>
+<p>示例：</p>
+<pre><code class="language-bash">log-search query -p prod-api -s 1h -k error
+log-search query -p prod-api -s 1h --format json | jq &#39;.message&#39;
+log-search query -p prod-api --raw-query &quot;topic:api AND status:500&quot; --format json
+</code></pre>
+<h3>6.3 <code>log-search tail</code></h3>
+<p>实时跟踪日志。</p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>说明</th>
+<th>示例</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>--profile, -p</code></td>
+<td>必填</td>
+<td><code>--profile web</code></td>
+</tr>
+<tr>
+<td><code>--since, -s</code></td>
+<td>从何时开始 tail</td>
+<td><code>--since 5m</code></td>
+</tr>
+<tr>
+<td><code>--keyword, -k</code></td>
+<td>过滤关键字</td>
+<td><code>-k &quot;500&quot;</code></td>
+</tr>
+<tr>
+<td><code>--format</code></td>
+<td>输出格式</td>
+<td><code>--format json</code></td>
+</tr>
+</tbody></table>
+<p>示例：</p>
+<pre><code class="language-bash">log-search tail -p web -k &quot;500&quot;
+</code></pre>
+<h3>6.4 <code>log-search profiles</code></h3>
+<p>列出所有 profile。</p>
+<pre><code class="language-bash">log-search profiles
+</code></pre>
+<p>输出：</p>
+<pre><code class="language-text">NAME       PROVIDERS
+prod-api   sls-prod-api, ssh-web-01
+test-api   sls-test-api
+web        ssh-web-01
+</code></pre>
+<h3>6.5 <code>log-search providers</code></h3>
+<p>列出所有可用 provider。</p>
+<pre><code class="language-bash">log-search providers
+</code></pre>
+<p>输出：</p>
+<pre><code class="language-text">TYPE  DESCRIPTION
+sls   Query logs from Aliyun Simple Log Service.
+ssh   Read logs from remote servers via SSH.
+</code></pre>
+<h3>6.6 <code>log-search config validate</code></h3>
+<p>验证配置文件。</p>
+<pre><code class="language-bash">log-search config validate
+</code></pre>
+<h3>6.7 <code>log-search init</code></h3>
+<p>初始化配置目录和模板文件。</p>
+<pre><code class="language-bash">log-search init
+</code></pre>
+<h2>7. Provider 加载机制</h2>
+<h3>7.1 内置 Provider</h3>
+<p>CLI Core 显式 import 并注册内置 provider：</p>
+<pre><code class="language-typescript">import { slsProvider } from &#39;@log-search/provider-sls&#39;;
+import { sshProvider } from &#39;@log-search/provider-ssh&#39;;
+
+const registry = new ProviderRegistry();
+registry.register(slsProvider);
+registry.register(sshProvider);
+</code></pre>
+<h3>7.2 插件 Provider</h3>
+<p>通过配置文件 <code>plugins</code> 列表显式声明，CLI 用 ESM 动态 <code>import()</code> 加载：</p>
+<pre><code class="language-typescript">for (const pluginName of config.plugins ?? []) {
+  const mod = await import(pluginName);
+  const provider = mod.default ?? mod;
+  registry.register(provider);
+}
+</code></pre>
+<p>插件包命名建议：<code>@log-search/provider-&lt;type&gt;</code> 或 <code>log-search-provider-&lt;type&gt;</code>。</p>
+<h3>7.3 Provider 未找到</h3>
+<p>当 profile 引用的 provider type 未注册时：</p>
+<pre><code class="language-text">Provider type &quot;k8s&quot; not found for provider &quot;k8s-prod&quot;.
+Built-in providers: sls, ssh
+Configured plugins: @log-search/provider-k8s
+</code></pre>
+<h2>8. 输出格式化</h2>
+<h3>8.1 Text 格式（默认）</h3>
+<p>单 provider 时直接输出 <code>raw</code>：</p>
+<pre><code class="language-text">2024-06-13T08:18:00Z ERROR payment failed
+2024-06-13T08:18:01Z WARN  request timeout
+</code></pre>
+<p>多 provider 时前面加 <code>[source]</code>：</p>
+<pre><code class="language-text">[sls-prod-api] 2024-06-13T08:18:00Z ERROR payment failed
+[ssh-web-01]   2024-06-13T08:18:01Z ERROR connection timeout
+</code></pre>
+<h3>8.2 JSON 格式（<code>--format json</code>）</h3>
+<p>输出 NDJSON（Newline Delimited JSON），每行一个 JSON 对象：</p>
+<pre><code class="language-json">{&quot;source&quot;:&quot;sls-prod-api&quot;,&quot;timestamp&quot;:&quot;2024-06-13T08:18:00Z&quot;,&quot;level&quot;:&quot;ERROR&quot;,&quot;message&quot;:&quot;payment failed&quot;,&quot;raw&quot;:&quot;2024-06-13T08:18:00Z ERROR payment failed&quot;}
+{&quot;source&quot;:&quot;ssh-web-01&quot;,&quot;timestamp&quot;:&quot;2024-06-13T08:18:01Z&quot;,&quot;level&quot;:&quot;ERROR&quot;,&quot;message&quot;:&quot;connection timeout&quot;,&quot;raw&quot;:&quot;2024-06-13T08:18:01Z ERROR connection timeout&quot;}
+</code></pre>
+<h3>8.3 多 Provider 合并排序</h3>
+<ul>
+<li><code>query</code>：并行查询所有 provider，按 <code>timestamp</code> 排序后输出；无 <code>timestamp</code> 的日志按到达顺序排在末尾。</li>
+<li><code>tail</code>：同时消费多个 provider 流，使用固定大小的滑动窗口（默认 100 条）按 <code>timestamp</code> 排序输出；无 <code>timestamp</code> 的日志按到达顺序输出。</li>
+</ul>
+<h2>9. 错误处理</h2>
+<p>所有错误输出到 <strong>stderr</strong>，成功日志输出到 <strong>stdout</strong>。</p>
+<h3>9.1 退出码</h3>
+<table>
+<thead>
+<tr>
+<th>退出码</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>0</td>
+<td>成功</td>
+</tr>
+<tr>
+<td>1</td>
+<td>通用错误</td>
+</tr>
+<tr>
+<td>2</td>
+<td>配置错误</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Provider 未找到</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Provider 执行失败</td>
+</tr>
+<tr>
+<td>130</td>
+<td>用户中断（Ctrl+C）</td>
+</tr>
+</tbody></table>
+<h3>9.2 典型错误</h3>
+<p><strong>配置文件不存在：</strong></p>
+<pre><code class="language-text">Config file not found: ~/.config/log-search/config.yaml
+Run `log-search init` to create one.
+</code></pre>
+<p><strong>Profile 不存在：</strong></p>
+<pre><code class="language-text">Profile &quot;prod-ap&quot; not found.
+Did you mean: prod-api, test-api?
+</code></pre>
+<p><strong>Provider 配置校验失败：</strong></p>
+<pre><code class="language-text">Invalid provider config for &quot;sls-prod-api&quot;:
+- missing required field: project
+</code></pre>
+<p><strong>Provider 执行失败：</strong></p>
+<pre><code class="language-text">[ssh-web-01] Failed to query logs:
+ssh: connect to host app-01.example.com port 22: Connection refused
+</code></pre>
+<h3>9.3 多 Provider 部分失败</h3>
+<ul>
+<li><code>query</code>：失败的 provider 报错到 stderr，其他 provider 继续输出，最终退出码为 4。</li>
+<li><code>tail</code>：失败的 provider 停止 tail，其他 provider 继续，按 Ctrl+C 时全部停止。</li>
+</ul>
+<h2>10. 内置 Provider 实现要点</h2>
+<h3>10.1 SSH Provider</h3>
+<p><strong>连接参数：</strong></p>
+<pre><code class="language-yaml">type: ssh
+host: app-01.example.com
+user: admin
+port: 22
+</code></pre>
+<p><strong>query 实现：</strong></p>
+<p>根据参数生成远端 shell 命令并 spawn。例如 <code>--limit 100 --keyword error</code>：</p>
+<pre><code class="language-bash">ssh admin@app-01.example.com &quot;grep -E &#39;error&#39; /var/log/app.log | tail -n 100&quot;
+</code></pre>
+<p>逐行读取 stdout，包装为 <code>LogEntry</code>。</p>
+<p><strong>tail 实现：</strong></p>
+<pre><code class="language-bash">ssh -t admin@app-01.example.com &quot;tail -f /var/log/app.log | grep -E &#39;error&#39;&quot;
+</code></pre>
+<p><code>-t</code> 分配 tty，保证 Ctrl+C 可中断。</p>
+<p><strong>时间过滤：</strong></p>
+<p>SSH 读文件不支持按日志时间字段精确过滤。第一期 <code>--since</code> 先不实现精确映射，由用户通过 <code>--keyword</code> 或 <code>--raw-query</code> 传原生 shell 过滤逻辑；<code>--limit</code> 映射为 <code>tail -n &lt;limit&gt;</code>。</p>
+<h3>10.2 SLS Provider</h3>
+<p><strong>连接参数：</strong></p>
+<pre><code class="language-yaml">type: sls
+region: cn-hangzhou
+project: my-app-prod
+logstore: api-log
+</code></pre>
+<p><strong>query 实现：</strong></p>
+<p>调用 <code>aliyunlog log get_logs</code>：</p>
+<pre><code class="language-bash">aliyunlog log get_logs --request=&#39;{&quot;project&quot;:&quot;my-app-prod&quot;,&quot;logstore&quot;:&quot;api-log&quot;,&quot;fromTime&quot;:&quot;...&quot;,&quot;toTime&quot;:&quot;...&quot;,&quot;query&quot;:&quot;topic:api AND error&quot;,&quot;line&quot;:100}&#39;
+</code></pre>
+<p>解析返回的 JSON，每条日志转换为 <code>LogEntry</code>。</p>
+<p><strong>tail 实现：</strong></p>
+<p>第一期不实现。调用时抛出错误：</p>
+<pre><code class="language-text">tail is not supported by sls provider in this version.
+</code></pre>
+<h2>11. 项目结构</h2>
+<pre><code class="language-text">log-search/
+├── package.json
+├── pnpm-workspace.yaml
+├── pnpm-lock.yaml
+├── tsconfig.json
+├── README.md
+└── packages/
+    ├── cli/
+    │   ├── package.json
+    │   ├── src/
+    │   │   ├── index.ts
+    │   │   ├── commands/
+    │   │   │   ├── query.ts
+    │   │   │   ├── tail.ts
+    │   │   │   ├── profiles.ts
+    │   │   │   ├── providers.ts
+    │   │   │   └── config.ts
+    │   │   ├── config/
+    │   │   │   ├── loader.ts
+    │   │   │   └── validator.ts
+    │   │   ├── core/
+    │   │   │   ├── registry.ts
+    │   │   │   ├── dispatcher.ts
+    │   │   │   ├── formatter.ts
+    │   │   │   └── runner.ts
+    │   │   └── providers/
+    │   │       └── builtins.ts
+    │   └── bin/
+    │       └── log-search.js
+    ├── provider-types/
+    │   ├── package.json
+    │   └── src/
+    │       └── index.ts
+    ├── provider-sls/
+    │   ├── package.json
+    │   └── src/
+    │       └── index.ts
+    └── provider-ssh/
+        ├── package.json
+        └── src/
+            └── index.ts
+</code></pre>
+<h3>11.1 依赖关系</h3>
+<pre><code class="language-text">cli → provider-types
+cli → provider-sls
+cli → provider-ssh
+provider-sls → provider-types
+provider-ssh → provider-types
+</code></pre>
+<h3>11.2 ESM 配置</h3>
+<p>每个 <code>package.json</code>：</p>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;module&quot;,
+  &quot;exports&quot;: {
+    &quot;.&quot;: &quot;./dist/index.js&quot;
+  }
+}
+</code></pre>
+<p>根 <code>tsconfig.json</code>：</p>
+<pre><code class="language-json">{
+  &quot;compilerOptions&quot;: {
+    &quot;module&quot;: &quot;NodeNext&quot;,
+    &quot;moduleResolution&quot;: &quot;NodeNext&quot;,
+    &quot;target&quot;: &quot;ES2022&quot;
+  }
+}
+</code></pre>
+<h2>12. 测试策略</h2>
+<h3>12.1 单元测试</h3>
+<p>使用 <strong>Vitest</strong>（ESM 友好）。重点覆盖：</p>
+<ul>
+<li>配置加载与校验</li>
+<li>Provider Registry</li>
+<li>Formatter（text / NDJSON）</li>
+<li>Profile 解析</li>
+<li>命令参数解析</li>
+</ul>
+<h3>12.2 Provider 测试</h3>
+<ul>
+<li>SSH provider：mock <code>spawn(&#39;ssh&#39;, ...)</code>，验证生成的命令参数。</li>
+<li>SLS provider：mock <code>spawn(&#39;aliyunlog&#39;, ...)</code>，验证 request JSON。</li>
+</ul>
+<h3>12.3 集成测试</h3>
+<p>使用本地 fake provider 测试完整命令链路，不依赖真实 SLS/SSH。</p>
+<h3>12.4 E2E 测试（后续）</h3>
+<p>使用 <code>execa</code> 运行 CLI 命令，验证 stdout/stderr/退出码。</p>
+<h3>12.5 CI</h3>
+<p>GitHub Actions 跑 <code>pnpm test</code>，覆盖 Node.js 18/20/22。</p>
+<h2>13. 初始化与安装</h2>
+<h3>13.1 本地开发</h3>
+<pre><code class="language-bash">pnpm install
+pnpm build
+pnpm link --global
+</code></pre>
+<h3>13.2 发布安装</h3>
+<pre><code class="language-bash">npm install -g log-search
+</code></pre>
+<h3>13.3 初始化配置</h3>
+<pre><code class="language-bash">log-search init
+</code></pre>
+<p>创建 <code>~/.config/log-search/config.yaml</code> 模板。</p>
+<h3>13.4 依赖前提</h3>
+<ul>
+<li>Node.js ≥ 18</li>
+<li>pnpm</li>
+<li>阿里云 CLI 或 <code>aliyunlog</code> CLI（SLS provider 使用）</li>
+<li>OpenSSH 客户端（SSH provider 使用）</li>
+</ul>
+<h2>14. 决策记录</h2>
+<table>
+<thead>
+<tr>
+<th>决策</th>
+<th>选择</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>方案</td>
+<td>薄封装 + 插件化 Provider</td>
+<td>避免重复实现协议，同时保持统一接口和可扩展性</td>
+</tr>
+<tr>
+<td>技术栈</td>
+<td>TypeScript + Node.js + pnpm monorepo</td>
+<td>用户指定，ESM 现代</td>
+</tr>
+<tr>
+<td>配置格式</td>
+<td>YAML</td>
+<td>常见、可读性好、AI 和人都熟悉</td>
+</tr>
+<tr>
+<td>输出格式</td>
+<td>默认 text，<code>--format json</code> 输出 NDJSON</td>
+<td>人类和 AI 都友好</td>
+</tr>
+<tr>
+<td>认证</td>
+<td>复用 aliyun CLI / SSH agent</td>
+<td>不存储密钥，安全</td>
+</tr>
+<tr>
+<td>Profile 多 provider</td>
+<td>支持</td>
+<td>方便同时查多个来源</td>
+</tr>
+<tr>
+<td>SLS tail</td>
+<td>第一期不做</td>
+<td>SLS 没有原生 tail，轮询复杂度超出本期范围</td>
+</tr>
+<tr>
+<td>颜色高亮</td>
+<td>第一期不做</td>
+<td>避免 ANSI 字符干扰 AI 解析</td>
+</tr>
+</tbody></table>

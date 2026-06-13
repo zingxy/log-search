@@ -1,0 +1,25 @@
+{
+  "name": "@log-search/provider-types",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Shared types and interfaces for log-search providers",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
