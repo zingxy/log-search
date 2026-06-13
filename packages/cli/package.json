@@ -25,6 +25,7 @@
     "dev": "node --watch dist/index.js"
   },
   "dependencies": {
+    "@log-search/provider-docker": "workspace:*",
     "@log-search/provider-sls": "workspace:*",
     "@log-search/provider-ssh": "workspace:*",
     "@log-search/provider-types": "workspace:*",

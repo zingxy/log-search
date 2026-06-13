@@ -4,7 +4,7 @@ A unified CLI for querying logs from multiple sources. Built for both humans and
 
 ## Features
 
-- **Multiple log sources**: SSH remote files and Aliyun SLS in the first release.
+- **Multiple log sources**: SSH remote files, Aliyun SLS, and Docker logs (local or via SSH) in the first release.
 - **Unified interface**: Query and tail logs with the same commands regardless of source.
 - **Multi-provider profiles**: One profile can query several providers and merge results by timestamp.
 - **Human & AI friendly**: Plain text output by default; `--format json` emits NDJSON for easy parsing.
@@ -60,6 +60,17 @@ providers:
     user: admin
     path: /var/log/nginx/access.log
 
+  docker-api:
+    type: docker
+    container: api-server
+
+  docker-remote-api:
+    type: docker
+    container: api-server
+    ssh:
+      host: app-01.example.com
+      user: admin
+
 profiles:
   prod-api:
     providers:
@@ -72,6 +83,16 @@ profiles:
     provider: ssh-web-01
     defaults:
       path: /var/log/nginx/access.log
+
+  api:
+    provider: docker-api
+    defaults:
+      since: 1h
+
+  remote-api:
+    provider: docker-remote-api
+    defaults:
+      since: 1h
 
 plugins: []
 ```

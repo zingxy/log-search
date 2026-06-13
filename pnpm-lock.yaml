@@ -20,6 +20,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@log-search/provider-docker':
+        specifier: workspace:*
+        version: link:../provider-docker
       '@log-search/provider-sls':
         specifier: workspace:*
         version: link:../provider-sls
@@ -39,6 +42,22 @@ importers:
       '@types/js-yaml':
         specifier: ^4.0.9
         version: 4.0.9
+      '@types/node':
+        specifier: ^20.14.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.43)
+
+  packages/provider-docker:
+    dependencies:
+      '@log-search/provider-types':
+        specifier: workspace:*
+        version: link:../provider-types
+    devDependencies:
       '@types/node':
         specifier: ^20.14.0
         version: 20.19.43
