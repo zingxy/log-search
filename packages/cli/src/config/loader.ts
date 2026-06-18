@@ -1,7 +1,8 @@
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 
 export interface RawProviderConfig {
@@ -139,7 +140,10 @@ export async function initConfigDir(configDir?: string): Promise<string> {
   }
 
   await mkdir(dir, { recursive: true });
-  const template = `providers: {}
+  const schemaPath = resolve(dirname(fileURLToPath(import.meta.url)), 'config.schema.json');
+  const schemaUrl = pathToFileURL(schemaPath).href;
+  const template = `# yaml-language-server: $schema=${schemaUrl}
+providers: {}
 profiles: {}
 plugins: []
 `;

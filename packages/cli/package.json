@@ -29,6 +29,7 @@
     "@log-search/provider-sls": "workspace:*",
     "@log-search/provider-ssh": "workspace:*",
     "@log-search/provider-types": "workspace:*",
+    "ajv": "^8.20.0",
     "commander": "^12.1.0",
     "js-yaml": "^4.1.0"
   },

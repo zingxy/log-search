@@ -149,7 +149,11 @@ async function* runDocker(
 
   child.on('close', (code) => {
     finished = true;
-    if (code !== 0 && code !== null && !error) {
+    // When a keyword filter is used, the remote/local shell pipeline ends with
+    // grep, which exits with code 1 when there are no matches. Treat that as
+    // "no results" instead of an error.
+    const keywordNoMatch = opts.keyword && code === 1;
+    if (code !== 0 && code !== null && !keywordNoMatch && !error) {
       error = new Error(`${cmd} exited with code ${code}: ${stderr.trim() || 'unknown error'}`);
     }
     if (resolveNext) {

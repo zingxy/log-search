@@ -1,0 +1,119 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "log-search-config",
+  "title": "log-search configuration",
+  "description": "Schema for log-search config.yaml",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "providers": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/definitions/provider" },
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/definitions/profile" },
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "plugins": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "definitions": {
+    "provider": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "docker" } } },
+          "then": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "container"],
+            "properties": {
+              "type": { "type": "string" },
+              "description": { "type": "string" },
+              "container": { "type": "string", "minLength": 1 },
+              "ssh": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["host", "user"],
+                "properties": {
+                  "host": { "type": "string", "minLength": 1 },
+                  "user": { "type": "string", "minLength": 1 },
+                  "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "ssh" } } },
+          "then": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "host", "user"],
+            "properties": {
+              "type": { "type": "string" },
+              "description": { "type": "string" },
+              "host": { "type": "string", "minLength": 1 },
+              "user": { "type": "string", "minLength": 1 },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "path": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "sls" } } },
+          "then": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "region", "project", "logstore"],
+            "properties": {
+              "type": { "type": "string" },
+              "description": { "type": "string" },
+              "region": { "type": "string", "minLength": 1 },
+              "project": { "type": "string", "minLength": 1 },
+              "logstore": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "providers": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "minItems": 1
+            }
+          ]
+        },
+        "defaults": { "type": "object" }
+      },
+      "oneOf": [
+        { "required": ["provider"] },
+        { "required": ["providers"] }
+      ]
+    }
+  }
+}
