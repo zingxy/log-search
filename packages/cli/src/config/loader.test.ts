@@ -20,18 +20,19 @@ describe('normalizeProviders', () => {
 });
 
 describe('normalizeProfiles', () => {
-  it('normalizes singular provider', () => {
-    const result = normalizeProfiles({
-      web: { provider: 'ssh-web' },
-    });
-    expect(result[0].providers).toEqual(['ssh-web']);
-  });
-
   it('normalizes providers array', () => {
     const result = normalizeProfiles({
       multi: { providers: ['a', 'b'] },
     });
     expect(result[0].providers).toEqual(['a', 'b']);
+  });
+
+  it('rejects unsupported singular provider field', () => {
+    expect(() =>
+      normalizeProfiles({
+        web: { provider: 'ssh-web' } as never,
+      })
+    ).toThrow('Use "providers" array instead');
   });
 });
 

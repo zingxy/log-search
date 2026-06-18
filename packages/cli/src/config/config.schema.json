@@ -96,24 +96,15 @@
     "profile": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["providers"],
       "properties": {
-        "provider": { "type": "string", "minLength": 1 },
         "providers": {
-          "oneOf": [
-            { "type": "string", "minLength": 1 },
-            {
-              "type": "array",
-              "items": { "type": "string", "minLength": 1 },
-              "minItems": 1
-            }
-          ]
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
         },
         "defaults": { "type": "object" }
-      },
-      "oneOf": [
-        { "required": ["provider"] },
-        { "required": ["providers"] }
-      ]
+      }
     }
   }
 }

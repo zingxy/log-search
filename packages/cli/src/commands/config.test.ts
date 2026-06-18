@@ -44,7 +44,8 @@ describe('config lint', () => {
     container: app
 profiles:
   dev:
-    provider: helix
+    providers:
+      - helix
 plugins: []
 `);
     const registry = new ProviderRegistry();
@@ -86,7 +87,8 @@ plugins: []
     container: app
 profiles:
   dev:
-    provider: missing
+    providers:
+      - missing
 plugins: []
 `);
     const registry = new ProviderRegistry();

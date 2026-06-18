@@ -12,8 +12,7 @@ export interface RawProviderConfig {
 }
 
 export interface RawProfileConfig {
-  provider?: string;
-  providers?: string | string[];
+  providers?: string[];
   defaults?: Record<string, unknown>;
 }
 
@@ -84,12 +83,12 @@ export function normalizeProfiles(raw: RawConfig['profiles']): ProfileEntry[] {
     if (!config || typeof config !== 'object') {
       throw new Error(`Profile "${name}" config must be an object`);
     }
-    let providers: string[] = [];
-    if (config.provider) {
-      providers = [config.provider];
-    } else if (config.providers) {
-      providers = Array.isArray(config.providers) ? config.providers : [config.providers];
+    if ('provider' in config) {
+      throw new Error(
+        `Profile "${name}" uses unsupported field "provider". Use "providers" array instead.`
+      );
     }
+    const providers = Array.isArray(config.providers) ? config.providers : [];
     result.push({
       name,
       providers,
